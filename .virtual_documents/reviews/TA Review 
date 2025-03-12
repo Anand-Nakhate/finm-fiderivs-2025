@@ -1,0 +1,389 @@
+
+
+
+
+
+
+
+
+
+import pandas as pd
+
+DATE = '2025-01-31'
+FILEIN = f'../data/ratetree_data_{DATE}.xlsx'
+sheet_tree = 'rate tree'
+
+ratetree = pd.read_excel(FILEIN, sheet_name=sheet_tree).set_index('state')
+ratetree.columns.name = 'time'
+
+ratetree.style.format('{:.1%}',na_rep='').format_index('{:.2f}',axis=1)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+
+# Define bond parameters
+face_value = 100
+coupon_rate = 0.0441
+coupon = face_value * coupon_rate / 2  # Semiannual coupon = 2.205
+maturity = 5.0
+dt = 0.25  # Quarterly steps
+
+# Time steps from 0 to 5.0
+time_steps = np.arange(0, maturity + dt, dt)
+n_steps = len(time_steps)
+states = 20  # Number of states to match rate tree
+
+# Initialize cashflow tree
+cashflow_tree = pd.DataFrame(0.0, index=range(states), columns=time_steps)
+
+# Set cashflows at semiannual intervals
+semiannual_times = np.arange(0.5, maturity + dt, 0.5)
+for t in semiannual_times:
+    if t < maturity:
+        cashflow_tree[t] = coupon  # Coupon payment
+    elif t == maturity:
+        cashflow_tree[t] = face_value + coupon  # Final payment (102.205)
+
+# Display cashflow tree
+print("Cashflow Tree:")
+cashflow_tree
+
+
+
+
+
+import pandas as pd
+import numpy as np
+
+# Load data files
+cap_curves_file = "../data/cap_curves_2025-01-31.xlsx"
+ratetree_data_file = "../data/ratetree_data_2025-01-31.xlsx"
+
+# Read Excel files containing rate curves and binomial rate tree
+##datasets
+cap_curves_data = pd.ExcelFile(cap_curves_file)
+ratetree_data = pd.ExcelFile(ratetree_data_file)
+
+# Load datasets from respective sheets
+cap_curves_df = cap_curves_data.parse("rate curves 2025-01-31")
+ratetree_df = ratetree_data.parse("rate tree")
+
+# Remove 'state' column if present, since it is not needed for calculations
+if 'state' in ratetree_df.columns:
+    ratetree_df = ratetree_df.drop(columns=['state'])
+
+# Bond Parameters
+T = 5  # Total years to maturity
+coupon_rate = 0.0441  # 4.41% annual coupon rate
+face_value = 100  # Assume bond face value is 100
+coupon_payment = (coupon_rate / 2) * face_value  # Semiannual coupon payment
+
+# Standardize column names for consistency
+bond_value_tree = ratetree_df.copy()
+bond_value_tree.columns = [f"{col:.2f}" if isinstance(col, (int, float)) else col for col in bond_value_tree.columns]
+ratetree_df.columns = [f"{col:.2f}" if isinstance(col, (int, float)) else col for col in ratetree_df.columns]
+
+# Initialize Cashflow Tree: Assign coupon payments at appropriate nodes
+for col in bond_value_tree.columns:
+    time = float(col)  # Convert column name to time value
+    if time % 0.5 == 0 and time > 0:  # Apply semiannual coupon payments
+        bond_value_tree[col] = coupon_payment
+    else:
+        bond_value_tree[col] = 0  # No coupon payments at other time steps
+
+# Ensure final maturity column includes face value in cashflows
+maturity_col = "5.00"
+if maturity_col not in bond_value_tree.columns:
+    bond_value_tree[maturity_col] = face_value + coupon_payment
+else:
+    bond_value_tree[maturity_col] += face_value + coupon_payment
+
+# Backward induction for bond pricing (discount future values to present)
+for col in reversed(bond_value_tree.columns[:-1]):  # Iterate backward, excluding last column
+    time = float(col)
+    next_col = f"{round(time + 0.25, 2):.2f}"  # Compute next quarter step
+    
+    if next_col in bond_value_tree.columns:
+        discount_rates = ratetree_df[col]  # Fetch discount rates for current period
+        
+        # Compute expected future values using equal probabilities for up/down moves
+        future_values = 0.5 * (bond_value_tree[next_col] + bond_value_tree[next_col].shift(-1, fill_value=0))
+        
+        # Apply discounting to compute present value at this node
+        bond_value_tree[col] += future_values * np.exp(-discount_rates * 0.25)
+
+# Extract dirty price from the bond value tree (value at root node)
+dirty_price = bond_value_tree.iloc[0, 0]
+
+# Compute accrued interest for clean price calculation
+days_since_last_coupon = 1  # Assuming 1 day since last coupon payment
+days_in_coupon_period = 182  # Approximate days in a six-month coupon period
+accrued_interest = (coupon_payment * days_since_last_coupon) / days_in_coupon_period
+
+# Compute Clean Price by subtracting accrued interest
+clean_price = dirty_price - accrued_interest
+
+# Compute YTM-based Price using the T-year swap rate
+swap_rate_T = cap_curves_df.loc[cap_curves_df["tenor"] == T, "swap rates"].values[0]
+semiannual_swap_rate = (1 + swap_rate_T / 4) ** 2 - 1  # Convert quarterly compounding to semiannual
+num_coupons = T * 2  # Number of coupon periods
+
+# Compute discount factors for present value calculations
+discount_factors = [(1 + semiannual_swap_rate / 2) ** -t for t in range(1, num_coupons + 1)]
+
+# Compute price using standard bond pricing formula
+yt_price = sum(coupon_payment * df for df in discount_factors) + face_value * discount_factors[-1]
+
+# Store bond pricing results in DataFrame for output
+bond_pricing_results = pd.DataFrame({
+    "Method": ["Binomial Tree Dirty Price", "Binomial Tree Clean Price", "YTM Formula Price"],
+    "Price": [dirty_price, clean_price, yt_price]
+})
+
+# Display results
+print("Bond Pricing Results:")
+print(bond_pricing_results)
+
+
+
+# Display results
+print("Bond Pricing Results:")
+display(bond_pricing_results)
+
+# Display bond value tree for verification
+print("\nBond Value Tree:")
+display(bond_value_tree)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+
+# Load bond value tree from previous computation
+bond_value_tree = bond_value_tree.copy()
+
+# Callable bond parameters
+T_call = 3  # Expiration of the European call option
+K = 100  # Call strike price
+
+# Extract tree dimensions up to T_call
+valid_columns = [col for col in bond_value_tree.columns if float(col) <= T_call]
+num_periods = len(valid_columns)  # Excluding 'state' column
+num_states = T_call * 4 + 1  # Only include valid states (0 to 3 at T=3)
+
+# Initialize option value tree with NaNs
+option_value_tree = pd.DataFrame(np.nan, index=range(num_states), columns=valid_columns)
+
+# Set final values at expiration (T=3): max(Bond Value - Strike, 0)
+final_col = f"{T_call:.2f}"
+option_value_tree[final_col] = np.maximum(bond_value_tree[final_col].iloc[:num_states] - K, 0)
+
+# Backward induction for option valuation
+def compute_option_values(opt_tree, bond_tree):
+    for col_idx in reversed(range(0, num_periods - 1)):  # Iterate backward through time
+        current_col = opt_tree.columns[col_idx]
+        next_col = opt_tree.columns[col_idx + 1]
+        
+        for row_idx in range(col_idx + 1):  # Only process valid states
+            future_value = 0.5 * (opt_tree.iloc[row_idx, col_idx + 1] +
+                                  opt_tree.iloc[row_idx + 1, col_idx + 1])
+            discount_factor = np.exp(-ratetree_df[current_col].iloc[row_idx] * 0.25)
+            option_value = future_value * discount_factor
+            opt_tree.iloc[row_idx, col_idx] = option_value
+    
+    # Ensure timestep t=0 is properly assigned
+    root_col = opt_tree.columns[1]  # First time step after initialization
+    root_discount_factor = np.exp(-ratetree_df[root_col].iloc[0] * 0.25)
+    opt_tree.iloc[0, 0] = 0.5 * (opt_tree.iloc[0, 1] + opt_tree.iloc[1, 1]) * root_discount_factor
+
+# Compute option values via backward induction
+compute_option_values(option_value_tree, bond_value_tree)
+
+# Display option value tree
+print("European Call Option Value Tree (T=3, K=100):")
+display(option_value_tree)
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+
+# Load bond value tree from previous computation
+bond_value_tree = bond_value_tree.copy()
+
+# Callable bond parameters
+T_call = 3  # Expiration of the callable option
+K = 100  # Call strike price
+
+# Extract tree dimensions up to T_call
+valid_columns = [col for col in bond_value_tree.columns if float(col) <= T_call]
+num_periods = len(valid_columns) - 1  # Excluding 'state' column
+num_states = T_call * 4 + 1  # Only include valid states (0 to 3 at T=3)
+
+# Initialize callable bond value tree as a copy of bond_value_tree
+callable_bond_tree = bond_value_tree[valid_columns].copy()
+
+# Compute call value tree using European option values
+call_value_tree = option_value_tree[valid_columns].copy()
+
+# Compute callable bond values as Dirty Price - Call Value
+callable_bond_tree -= call_value_tree
+
+# Display callable bond value tree
+print("Callable Bond Value Tree (T=3, K=100):")
+display(callable_bond_tree)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import pandas as pd
+import numpy as np
+
+# Load bond value tree from previous computation
+bond_value_tree = bond_value_tree.copy()
+
+# Callable bond parameters
+T_call = 3  # Expiration of the American call option
+K = 100  # Call strike price
+
+# Extract tree dimensions up to T_call
+valid_columns = [col for col in bond_value_tree.columns if float(col) <= T_call]
+num_periods = len(valid_columns)  # Excluding 'state' column
+num_states = T_call * 4 + 1  # Only include valid states (0 to 3 at T=3)
+
+# Initialize option value tree with NaNs
+option_value_tree = pd.DataFrame(np.nan, index=range(num_states), columns=valid_columns)
+
+# Set final values at expiration (T=3): max(Bond Value - Strike, 0)
+final_col = f"{T_call:.2f}"
+option_value_tree[final_col] = np.maximum(bond_value_tree[final_col].iloc[:num_states] - K, 0)
+
+# Backward induction for American option valuation
+def compute_american_option_values(opt_tree, bond_tree):
+    for col_idx in reversed(range(1, num_periods - 1)):  # Iterate backward through time
+        current_col = opt_tree.columns[col_idx]
+        next_col = opt_tree.columns[col_idx + 1]
+        
+        for row_idx in range(col_idx + 1):  # Only process valid states
+            future_value = 0.5 * (opt_tree.iloc[row_idx, col_idx + 1] +
+                                  opt_tree.iloc[row_idx + 1, col_idx + 1])
+            discount_factor = np.exp(-ratetree_df[current_col].iloc[row_idx] * 0.25)
+            option_value = future_value * discount_factor
+            
+            # Include early exercise feature (American option)
+            exercise_value = bond_tree.iloc[row_idx, col_idx] - K
+            opt_tree.iloc[row_idx, col_idx] = max(option_value, exercise_value)
+    
+    # Ensure timestep t=0 is properly assigned
+    root_col = opt_tree.columns[1]  # First time step after initialization
+    root_discount_factor = np.exp(-ratetree_df[root_col].iloc[0] * 0.25)
+    opt_tree.iloc[0, 0] = max(0.5 * (opt_tree.iloc[0, 1] + opt_tree.iloc[1, 1]) * root_discount_factor,
+                               bond_tree.iloc[0, 0] - K)
+
+# Compute option values via backward induction
+compute_american_option_values(option_value_tree, bond_value_tree)
+
+# Display option value tree
+print("American Call Option Value Tree (T=3, K=100):")
+display(option_value_tree)
+
+
+import pandas as pd
+import numpy as np
+
+# Load bond value tree from previous computation
+bond_value_tree = bond_value_tree.copy()
+
+# Callable bond parameters
+T_call = 3  # Expiration of the callable option
+K = 100  # Call strike price
+
+# Extract tree dimensions up to T_call
+valid_columns = [col for col in bond_value_tree.columns if float(col) <= T_call]
+num_periods = len(valid_columns) - 1  # Excluding 'state' column
+num_states = T_call * 4 + 1  # Only include valid states (0 to 3 at T=3)
+
+# Initialize callable bond value tree as a copy of bond_value_tree
+callable_bond_tree = bond_value_tree[valid_columns].copy()
+
+# Compute American call value tree using American option values
+call_value_tree = option_value_tree[valid_columns].copy()
+
+# Compute callable bond values as Dirty Price - Call Value
+callable_bond_tree -= call_value_tree
+
+# Display callable bond value tree
+print("Callable Bond Value Tree (American Style, T=3, K=100):")
+display(callable_bond_tree)
+
+
+
+
+
+import pandas as pd
+import numpy as np
+
+# Load callable bond tree
+callable_bond_tree = callable_bond_tree.copy()
+
+# Callable bond parameters
+K = 100  # Call strike price
+
+# Extract tree dimensions
+valid_columns = callable_bond_tree.columns
+num_states = len(callable_bond_tree)
+
+# Initialize exercise decision matrix (1 = Exercise, 0 = Hold)
+exercise_matrix = pd.DataFrame(0, index=callable_bond_tree.index, columns=valid_columns)
+
+# Determine exercise decisions based on correct rule
+for col in valid_columns:
+    exercise_matrix[col] = (callable_bond_tree[col] >= 100.00).astype(int)
+
+# Display exercise decision matrix
+print("Exercise Decision Matrix for American Callable Bond (1 = Exercise, 0 = Hold):")
+display(exercise_matrix)
+
+
+
